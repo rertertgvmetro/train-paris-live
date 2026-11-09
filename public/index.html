@@ -8,202 +8,175 @@
   <style>
     * { box-sizing: border-box; }
     body {
-      margin: 0;
-      padding: 24px;
-      font-family: Arial, sans-serif;
-      background: #101827;
-      color: white;
+      margin: 0; padding: 24px; font-family: Arial, sans-serif;
+      background: #101827; color: white;
     }
     main {
-      max-width: 650px;
-      margin: 35px auto;
-      padding: 25px;
-      background: #1d293b;
-      border-radius: 18px;
+      max-width: 680px; margin: 35px auto; padding: 25px;
+      background: #1d293b; border-radius: 18px;
     }
     h1 { text-align: center; }
     p { color: #cbd5e1; }
-    label {
-      display: block;
-      margin-top: 22px;
-      margin-bottom: 8px;
-      font-weight: bold;
-    }
+    label { display: block; margin: 20px 0 8px; font-weight: bold; }
     select, button {
-      width: 100%;
-      padding: 14px;
-      border-radius: 9px;
-      border: 0;
-      font-size: 16px;
+      width: 100%; padding: 14px; border-radius: 9px;
+      border: 0; font-size: 16px;
     }
     select { background: white; color: #111827; }
     button {
-      margin-top: 22px;
-      background: #2563eb;
-      color: white;
-      font-weight: bold;
-      cursor: pointer;
+      margin-top: 22px; background: #2563eb; color: white;
+      font-weight: bold; cursor: pointer;
     }
-    #status, #details {
-      margin-top: 20px;
-      padding: 14px;
-      background: #101827;
-      border-radius: 9px;
-      line-height: 1.6;
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #status, #results {
+      margin-top: 20px; padding: 15px;
+      background: #101827; border-radius: 9px; line-height: 1.6;
+      overflow-wrap: anywhere;
     }
-    .muted { color: #94a3b8; font-size: 14px; }
+    .passage {
+      padding: 12px; margin: 10px 0;
+      background: #26364d; border-radius: 8px;
+    }
+    .muted { color: #94a3b8; font-size: 13px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
 <main>
   <h1>🚇 Metro Paris Live</h1>
-  <p>Choisis une ligne et une station du métro parisien.</p>
+  <p>Choisis une ligne, une station et une référence d'arrêt.</p>
 
   <label for="line">Ligne de métro</label>
   <select id="line" disabled>
-    <option>Chargement des lignes...</option>
+    <option>Chargement...</option>
   </select>
 
   <label for="station">Station</label>
   <select id="station" disabled>
-    <option>En attente...</option>
+    <option>Choisir une station</option>
   </select>
 
-  <button id="show" disabled>Afficher la station</button>
+  <label for="stop">Quai / référence PRIM</label>
+  <select id="stop" disabled>
+    <option>Choisir une station d'abord</option>
+  </select>
 
-  <div id="status">Chargement du catalogue des stations...</div>
-  <div id="details" hidden></div>
-  <p class="muted">
-    Les horaires en temps réel seront ajoutés après le raccordement
-    des identifiants de stations à l'API PRIM.
-  </p>
+  <button id="search" disabled>Voir les prochains passages</button>
+
+  <div id="status">Chargement des fichiers...</div>
+  <div id="results" hidden></div>
+  <p class="muted">Les horaires dépendent de la disponibilité des données temps réel pour l'arrêt choisi.</p>
 </main>
 
 <script>
-const lineSelect = document.getElementById("line");
-const stationSelect = document.getElementById("station");
-const showButton = document.getElementById("show");
-const statusBox = document.getElementById("status");
-const detailsBox = document.getElementById("details");
+const $ = id => document.getElementById(id);
+const lineSelect = $("line");
+const stationSelect = $("station");
+const stopSelect = $("stop");
+const searchButton = $("search");
+const statusBox = $("status");
+const resultsBox = $("results");
 
-let allStops = [];
+let catalog = [];
+let realtimeStops = [];
 
 function parseCSV(text) {
   const rows = [];
-  let row = [];
-  let cell = "";
-  let quoted = false;
+  let row = [], cell = "", quoted = false;
 
   for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const next = text[i + 1];
+    const c = text[i], next = text[i + 1];
 
-    if (char === '"' && quoted && next === '"') {
-      cell += '"';
-      i++;
-    } else if (char === '"') {
+    if (c === '"' && quoted && next === '"') {
+      cell += '"'; i++;
+    } else if (c === '"') {
       quoted = !quoted;
-    } else if (char === ";" && !quoted) {
+    } else if (c === ";" && !quoted) {
+      row.push(cell); cell = "";
+    } else if ((c === "\n" || c === "\r") && !quoted) {
+      if (c === "\r" && next === "\n") i++;
       row.push(cell);
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && next === "\n") i++;
-      row.push(cell);
-      if (row.some(value => value.trim() !== "")) rows.push(row);
-      row = [];
-      cell = "";
+      if (row.some(v => v.trim())) rows.push(row);
+      row = []; cell = "";
     } else {
-      cell += char;
+      cell += c;
     }
   }
 
   row.push(cell);
-  if (row.some(value => value.trim() !== "")) rows.push(row);
+  if (row.some(v => v.trim())) rows.push(row);
 
-  const headers = rows.shift().map(value => value.trim());
+  const headers = rows.shift().map(v => v.trim().replace(/^\uFEFF/, ""));
   return rows.map(values => {
-    const item = {};
-    headers.forEach((header, index) => {
-      item[header] = (values[index] || "").trim();
-    });
-    return item;
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (values[i] || "").trim());
+    return obj;
   });
 }
 
-function cleanLine(stop) {
-  let line = (stop.shortName || "").trim();
-
-  if (!line) {
-    const route = stop.route_long_name || "";
-    const match = route.match(/(?:métro|metro)?\s*(\d{1,2}\s*bis|\d{1,2})/i);
-    if (match) line = match[1];
-  }
-
-  return line.replace(/\s+/g, "").toLowerCase();
+function normalize(value) {
+  return (value || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function displayLine(line) {
-  return line.replace("bis", "bis");
+function lineName(row) {
+  return (row.shortName || "").trim();
 }
 
-function loadStations() {
-  fetch("/arrets-lignes.csv")
-    .then(response => {
-      if (!response.ok) throw new Error("Fichier CSV introuvable");
-      return response.text();
-    })
-    .then(text => {
-      allStops = parseCSV(text).filter(stop =>
-        stop.stop_name && stop.stop_id
-      );
+async function loadFiles() {
+  try {
+    const [catalogResponse, realtimeResponse] = await Promise.all([
+      fetch("/arrets-lignes.csv"),
+      fetch("/perimetre-des-donnees-temps-reel-disponibles-sur-la-plateforme-dechanges-stif.csv")
+    ]);
 
-      allStops.forEach(stop => {
-        stop.metroLine = cleanLine(stop);
-      });
+    if (!catalogResponse.ok) throw new Error("Impossible de lire arrets-lignes.csv");
+    if (!realtimeResponse.ok) throw new Error("Impossible de lire le fichier du périmètre temps réel");
 
-      const lines = [...new Set(
-        allStops.map(stop => stop.metroLine).filter(Boolean)
-      )].sort((a, b) => {
-        const numberA = parseInt(a);
-        const numberB = parseInt(b);
-        if (numberA !== numberB) return numberA - numberB;
-        return a.localeCompare(b);
-      });
+    const [catalogText, realtimeText] = await Promise.all([
+      catalogResponse.text(), realtimeResponse.text()
+    ]);
 
-      lineSelect.innerHTML = '<option value="">Choisir une ligne</option>';
+    catalog = parseCSV(catalogText).filter(r => r.stop_name && r.stop_id);
+    realtimeStops = parseCSV(realtimeText).filter(r =>
+      r["ns2:StopName"] && r["ns2:StopPointRef"]
+    );
 
-      lines.forEach(line => {
-        const option = document.createElement("option");
-        option.value = line;
-        option.textContent = displayLine(line);
-        lineSelect.appendChild(option);
-      });
+    const lines = [...new Set(catalog.map(lineName).filter(Boolean))]
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
 
-      lineSelect.disabled = false;
-      statusBox.textContent =
-        allStops.length + " arrêts chargés. Choisis une ligne.";
-    })
-    .catch(error => {
-      statusBox.textContent =
-        "Erreur de chargement : " + error.message +
-        ". Vérifie que arrets-lignes.csv est bien dans le dossier public.";
+    lineSelect.innerHTML = '<option value="">Choisir une ligne</option>';
+
+    lines.forEach(line => {
+      const option = document.createElement("option");
+      option.value = line;
+      option.textContent = line;
+      lineSelect.appendChild(option);
     });
+
+    lineSelect.disabled = false;
+    statusBox.textContent =
+      catalog.length + " entrées de stations chargées ; " +
+      realtimeStops.length + " références temps réel chargées.";
+  } catch (error) {
+    statusBox.textContent = "Erreur : " + error.message +
+      ". Vérifie les deux fichiers dans le dossier public.";
+  }
 }
 
 lineSelect.addEventListener("change", () => {
-  const selectedLine = lineSelect.value;
-  const stops = allStops.filter(stop => stop.metroLine === selectedLine);
+  const line = lineSelect.value;
+  const stations = catalog.filter(r => lineName(r) === line);
 
-  const uniqueStations = new Map();
-  stops.forEach(stop => {
-    const key = stop.stop_name.toLocaleLowerCase("fr");
-    if (!uniqueStations.has(key)) uniqueStations.set(key, stop.stop_name);
+  const unique = new Map();
+  stations.forEach(r => {
+    const key = normalize(r.stop_name);
+    if (!unique.has(key)) unique.set(key, r.stop_name);
   });
 
   stationSelect.innerHTML = '<option value="">Choisir une station</option>';
-
-  [...uniqueStations.values()]
-    .sort((a, b) => a.localeCompare(b, "fr"))
+  [...unique.values()].sort((a, b) => a.localeCompare(b, "fr"))
     .forEach(name => {
       const option = document.createElement("option");
       option.value = name;
@@ -212,49 +185,95 @@ lineSelect.addEventListener("change", () => {
     });
 
   stationSelect.disabled = false;
-  showButton.disabled = true;
-  detailsBox.hidden = true;
-  statusBox.textContent = uniqueStations.size + " stations trouvées sur cette ligne.";
+  stopSelect.innerHTML = '<option value="">Choisir une station d'abord</option>';
+  stopSelect.disabled = true;
+  searchButton.disabled = true;
+  resultsBox.hidden = true;
+  statusBox.textContent = stations.length + " entrées trouvées sur la ligne " + line + ".";
 });
 
 stationSelect.addEventListener("change", () => {
-  showButton.disabled = !stationSelect.value;
-  detailsBox.hidden = true;
-});
-
-showButton.addEventListener("click", () => {
   const name = stationSelect.value;
   const line = lineSelect.value;
-  const matchingStops = allStops.filter(stop =>
-    stop.metroLine === line && stop.stop_name === name
+
+  const matches = realtimeStops.filter(r =>
+    normalize(r["ns2:StopName"]) === normalize(name) &&
+    normalize(r.Name_Line) === normalize(line)
   );
 
-  detailsBox.hidden = false;
-  detailsBox.innerHTML = "";
+  stopSelect.innerHTML = '<option value="">Choisir une référence</option>';
 
-  const title = document.createElement("h2");
-  title.textContent = "Ligne " + line + " — " + name;
-  detailsBox.appendChild(title);
-
-  const info = document.createElement("p");
-  info.textContent = matchingStops.length +
-    " entrée(s) trouvée(s) dans le catalogue.";
-  detailsBox.appendChild(info);
-
-  matchingStops.forEach(stop => {
-    const item = document.createElement("p");
-    item.textContent = "Identifiant catalogue : " + stop.stop_id;
-    detailsBox.appendChild(item);
+  const refs = new Map();
+  matches.forEach(r => {
+    const ref = r["ns2:StopPointRef"];
+    if (ref && !refs.has(ref)) refs.set(ref, r);
   });
 
-  const note = document.createElement("p");
-  note.className = "muted";
-  note.textContent =
-    "Ces identifiants proviennent du catalogue des arrêts. Ils ne sont pas nécessairement les identifiants MonitoringRef nécessaires aux horaires PRIM.";
-  detailsBox.appendChild(note);
+  refs.forEach((r, ref) => {
+    const option = document.createElement("option");
+    option.value = ref;
+    option.textContent = ref + (r.OperatorName ? " — " + r.OperatorName : "");
+    stopSelect.appendChild(option);
+  });
+
+  stopSelect.disabled = refs.size === 0;
+  searchButton.disabled = true;
+  resultsBox.hidden = true;
+
+  if (refs.size === 0) {
+    statusBox.textContent =
+      "Aucune référence temps réel trouvée pour cette station et cette ligne dans le fichier.";
+  } else {
+    statusBox.textContent = refs.size +
+      " référence(s) PRIM trouvée(s). Choisis-en une pour tester les horaires.";
+  }
 });
 
-loadStations();
+stopSelect.addEventListener("change", () => {
+  searchButton.disabled = !stopSelect.value;
+  resultsBox.hidden = true;
+});
+
+searchButton.addEventListener("click", async () => {
+  const ref = stopSelect.value;
+  if (!ref) return;
+
+  searchButton.disabled = true;
+  statusBox.textContent = "Recherche des prochains passages...";
+  resultsBox.hidden = false;
+  resultsBox.textContent = "";
+
+  try {
+    const response = await fetch(
+      "/.netlify/functions/next?MonitoringRef=" + encodeURIComponent(ref)
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Erreur de l'API (" + response.status + ")");
+    }
+
+    resultsBox.innerHTML = "";
+    const title = document.createElement("h2");
+    title.textContent = "Réponse PRIM reçue";
+    resultsBox.appendChild(title);
+
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(data, null, 2);
+    resultsBox.appendChild(pre);
+
+    statusBox.textContent = "Réponse reçue. Vérifions maintenant les horaires.";
+  } catch (error) {
+    statusBox.textContent = "Erreur : " + error.message;
+    resultsBox.textContent =
+      "La requête n'a pas abouti. Vérifie la fonction Netlify et la référence choisie.";
+  } finally {
+    searchButton.disabled = !stopSelect.value;
+  }
+});
+
+loadFiles();
 </script>
 </body>
 </html>
